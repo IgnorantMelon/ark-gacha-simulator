@@ -84,4 +84,6 @@ def test_linux_archive_has_verified_manifest_posix_scripts_and_no_private_files(
         assert prefix + "README-LINUX.md" in names
         assert prefix + "compose.yaml" in names
     expected = hashlib.sha256(archive.read_bytes()).hexdigest()
-    assert archive.with_name(archive.name + ".sha256").read_text().startswith(expected)
+    assert archive.with_name(archive.name + ".sha256").read_bytes() == (
+        f"{expected}  {archive.name}\n".encode()
+    )
