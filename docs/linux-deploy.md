@@ -4,6 +4,7 @@
 部署包包含代码、锁定依赖清单、127 个专属名称卡池及 315 张静态头像；不包含个人 `.env`、SQLite、QQ 登录资料或抽卡结果。
 首次构建或安装需要联网获取基础镜像、Python 依赖和中文字体；卡池与头像种子已经随包提供。
 另附的 `ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz` 是已经构建好的 x86_64 镜像；使用该镜像可以跳过构建及依赖下载。
+部署包从开发机的 `dist/` 目录交付，上传服务器后使用；GitHub 仓库用于同步代码。
 
 ## Docker Compose 部署
 
@@ -111,23 +112,24 @@ docker compose start bot
 适用于已经使用 0.1.0、部署目录为 `/root/ark-gacha-simulator/ark-gacha-simulator` 的 Linux amd64 实例。
 在服务器上执行；其他安装路径需要相应替换。0.1.1 无需迁移数据库，已有 `.env`、`data/` 和 `napcat/` 保留。
 
-先在部署目录上一级下载新版本的两个压缩包和校验文件：
+先在开发机项目目录的 PowerShell 中，将两个压缩包和校验文件上传到服务器部署目录上一级。
+把 `服务器公网IP` 换成实际地址；SSH 使用其他端口时，给 `scp` 添加 `-P 端口号`：
+
+```powershell
+scp `
+  .\dist\ark-gacha-simulator-0.1.1-linux.tar.gz `
+  .\dist\ark-gacha-simulator-0.1.1-linux.tar.gz.sha256 `
+  .\dist\ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz `
+  .\dist\ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz.sha256 `
+  root@服务器公网IP:/root/ark-gacha-simulator/
+```
+
+以下在服务器上执行，先校验文件：
 
 ```bash
 (
 set -eu
 cd /root/ark-gacha-simulator
-
-for asset in \
-  ark-gacha-simulator-0.1.1-linux.tar.gz \
-  ark-gacha-simulator-0.1.1-linux.tar.gz.sha256 \
-  ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz \
-  ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz.sha256
-do
-  curl --fail --location --retry 3 \
-    --output "$asset" \
-    "https://github.com/IgnorantMelon/ark-gacha-simulator/releases/download/v0.1.1/$asset"
-done
 
 sha256sum -c ark-gacha-simulator-0.1.1-linux.tar.gz.sha256
 sha256sum -c ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz.sha256
