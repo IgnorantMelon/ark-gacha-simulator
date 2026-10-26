@@ -118,9 +118,19 @@ async def test_real_reverse_websocket_text_images_and_failed_delivery_history(ap
                         return action["params"]["message"]
 
             current = await command("方舟卡池")
-            assert current == [{"type": "text", "data": {"text": "char_up"}}]
+            assert current == [{"type": "text", "data": {"text": "测试卡池 | char_up"}}]
             listing = await command("卡池列表 1")
-            assert listing[0]["data"]["text"] == "NORMAL_TEST | 测试卡池"
+            assert listing[0]["data"]["text"] == "测试卡池 | char_up | NORMAL_TEST"
+            help_reply = await command("help")
+            help_text = help_reply[0]["data"]["text"]
+            assert "切换卡池 latest" in help_text.splitlines()
+            for alias in ["/help", "帮助", "/帮助"]:
+                assert await command(alias) == help_reply
+            for pool_id in ["normal_test", "LATEST"]:
+                switched = await command(f"切换卡池 {pool_id}")
+                assert switched[0]["data"]["text"] == "已切换卡池：NORMAL_TEST | 测试卡池"
+            pity = await command("查看水位")
+            assert pity[0]["data"]["text"] == "连续未出六星：0抽\n本池累计抽数：0抽"
             ten = await command("方舟十连", fail_delivery=True)
             assert ten[0]["type"] == "image"
             payload = ten[0]["data"]["file"]

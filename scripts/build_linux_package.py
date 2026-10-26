@@ -22,6 +22,7 @@ def collect_files(root: Path, data: Path) -> dict[str, bytes]:
         "Dockerfile",
         "compose.yaml",
         "README.md",
+        "CHANGELOG.md",
         "docs/rules.md",
         "docs/linux-deploy.md",
         "deploy/linux/ark-gacha.service",

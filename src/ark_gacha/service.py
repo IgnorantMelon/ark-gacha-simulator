@@ -8,12 +8,29 @@ from datetime import UTC, datetime
 
 from .catalog import Catalog, is_named_pool
 from .config import Settings
-from .engine import simulate, six_rate
+from .engine import simulate
 from .models import DrawMode, DrawState, UserError
 from .render import Renderer
 from .storage import Store
 
 log = logging.getLogger(__name__)
+HELP_ALIASES = {"help", "/help", "帮助", "/帮助"}
+HELP_TEXT = "\n".join(
+    [
+        "方舟十连",
+        "方舟一井",
+        "方舟卡池",
+        "方舟卡池 <关键词>",
+        "卡池列表",
+        "卡池列表 <页码>",
+        "切换卡池 <pool_id>",
+        "切换卡池 latest",
+        "更新卡池",
+        "查看水位",
+        "查看历史",
+        "help | /help | 帮助 | /帮助",
+    ]
+)
 COMMANDS = {
     "方舟十连",
     "方舟一井",
@@ -23,7 +40,7 @@ COMMANDS = {
     "更新卡池",
     "查看水位",
     "查看历史",
-}
+} | HELP_ALIASES
 
 
 @dataclass
@@ -98,11 +115,17 @@ class GachaService:
             return None
         try:
             command, arg = parsed
-            if command in {"方舟十连", "方舟一井", "查看水位", "查看历史", "更新卡池"} and arg:
+            if (
+                command
+                in {"方舟十连", "方舟一井", "查看水位", "查看历史", "更新卡池"} | HELP_ALIASES
+                and arg
+            ):
                 raise UserError(f"用法：{command}")
             if command in {"切换卡池", "更新卡池"}:
                 if user not in self.settings.admin_qq:
                     raise UserError("此命令仅配置的机器人管理员可用。")
+            if command in HELP_ALIASES:
+                return Reply(texts=[HELP_TEXT])
             if command == "方舟卡池":
                 return await self.pool_query(arg)
             if command == "卡池列表":
@@ -131,28 +154,9 @@ class GachaService:
                 _, pool = await self.current()
                 before = await self.store.read(user, pool.id, pool.pity_domain, self.clock())
                 state = before.state
-                lines = [
-                    f"连续未出六星：{state.misses}抽",
-                    f"下一抽六星概率：{six_rate(pool.rates[6], state.misses):.0%}",
-                    f"本池十连累计：{state.pulls}抽",
-                ]
-                if pool.rules.first_ten:
-                    lines.append(
-                        f"首次十抽五星以上保底：{'已完成' if state.first_five_done else '未完成'}"
-                    )
-                if pool.rules.directed_threshold:
-                    lines.append(
-                        f"定向选调连续未出目标：{state.directed_misses}抽；"
-                        f"{'已生效' if state.directed_done else '未生效'}"
-                    )
-                if pool.rules.selection_thresholds:
-                    lines.append(f"双UP选调已生效：{len(state.selection_picks)}次")
-                if pool.rules.target_six:
-                    lines.append(
-                        f"联动目标连续未出：{state.target_six_misses}抽；"
-                        f"保底类型：{pool.rules.target_six_mode}"
-                    )
-                return Reply(texts=["\n".join(lines)])
+                return Reply(
+                    texts=[f"连续未出六星：{state.misses}抽\n本池累计抽数：{state.pulls}抽"]
+                )
             if command == "查看历史":
                 self.prune_history()
                 record = self.history.get(user)
@@ -172,12 +176,11 @@ class GachaService:
     async def pool_query(self, arg: str) -> Reply:
         if not arg:
             snapshot, pool = await self.current()
-            return Reply(
-                texts=[
-                    " / ".join(snapshot.operators[c] for c in pool.direct_up(6))
-                    or "本期无直接UP六星干员"
-                ]
+            up = (
+                " / ".join(snapshot.operators[c] for c in pool.direct_up(6))
+                or "本期无直接UP六星干员"
             )
+            return Reply(texts=[f"{pool.name} | {up}"])
         snapshot = self.catalog.load()
         key = arg.casefold()
         pools = [
@@ -185,7 +188,7 @@ class GachaService:
             for p in self.catalog.available(snapshot, self.clock())
             if key in p.id.casefold() or key in p.name.casefold()
         ]
-        return self.pool_rows(snapshot, pools, show_up=True)
+        return self.pool_rows(snapshot, pools)
 
     def pool_list(self, arg: str) -> Reply:
         snapshot = self.catalog.load()
@@ -196,19 +199,18 @@ class GachaService:
         page = int(arg) if arg else 1
         if page > pages:
             raise UserError(f"页码超出范围，有效范围1至{pages}。")
-        return self.pool_rows(snapshot, pools[(page - 1) * 10 : page * 10], show_up=not arg)
+        return self.pool_rows(snapshot, pools[(page - 1) * 10 : page * 10], id_last=True)
 
     @staticmethod
-    def pool_rows(snapshot, pools, show_up: bool) -> Reply:
+    def pool_rows(snapshot, pools, *, id_last: bool = False) -> Reply:
         if not pools:
             return Reply(texts=["没有匹配的可选卡池。"])
         rows = []
         for pool in pools:
-            row = f"{pool.id} | {pool.name}"
-            if show_up:
-                row += " | " + (
-                    " / ".join(snapshot.operators[c] for c in pool.direct_up(6)) or "无"
-                )
+            up = " / ".join(snapshot.operators[c] for c in pool.direct_up(6)) or "无"
+            row = (
+                f"{pool.name} | {up} | {pool.id}" if id_last else f"{pool.id} | {pool.name} | {up}"
+            )
             rows.append(row)
         return Reply(texts=["\n".join(rows[i : i + 10]) for i in range(0, len(rows), 10)])
 
@@ -216,9 +218,14 @@ class GachaService:
         if not pool_id:
             raise UserError("用法：切换卡池 <pool_id>")
         snapshot = self.catalog.load()
-        pool = next(
-            (p for p in self.catalog.available(snapshot, self.clock()) if p.id == pool_id), None
-        )
+        pools = self.catalog.available(snapshot, self.clock())
+        key = pool_id.casefold()
+        if key == "latest":
+            if not pools:
+                raise UserError("暂无可选卡池，请管理员先执行更新卡池。")
+            pool = pools[0]
+        else:
+            pool = next((p for p in pools if p.id.casefold() == key), None)
         if pool is None:
             raise UserError("卡池不存在、尚未开放或未通过规则校验。")
         await self.renderer.prepare(pool)

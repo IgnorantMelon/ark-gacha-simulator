@@ -1,6 +1,6 @@
 [project]
 name = "ark-gacha-simulator"
-version = "0.1.0"
+version = "0.1.1"
 description = "Non-official QQ bot for historical Arknights headhunting simulation"
 requires-python = ">=3.11,<3.12"
 dependencies = [

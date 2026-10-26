@@ -20,15 +20,127 @@ async def view(app, user="u", pool_id="NORMAL_TEST", domain="standard"):
 
 async def test_command_fields_and_numeric_keyword(app):
     current = await send(app, "方舟卡池")
-    assert current.texts == ["char_up"]
+    assert current.texts == ["测试卡池 | char_up"]
     full = await send(app, "卡池列表")
-    assert full.texts == ["NORMAL_TEST | 测试卡池 | char_up"]
+    assert full.texts == ["测试卡池 | char_up | NORMAL_TEST"]
     page = await send(app, "卡池列表 1")
-    assert page.texts == ["NORMAL_TEST | 测试卡池"]
+    assert page.texts == full.texts
     result = await send(app, "方舟卡池 测试")
-    assert result.texts == full.texts
+    assert result.texts == ["NORMAL_TEST | 测试卡池 | char_up"]
     numeric = await send(app, "方舟卡池 999")
     assert numeric.texts == ["没有匹配的可选卡池。"]
+
+
+async def test_pool_pages_include_up_and_put_id_last(app):
+    service, _ = app
+    snapshot = service.catalog.load()
+    original = snapshot.pools[0]
+    snapshot.pools = [
+        original.model_copy(update={"id": f"POOL_{i:02}", "name": f"卡池{i}", "opened_at": i + 2})
+        for i in range(12)
+    ]
+    latest = await send(app, "卡池列表")
+    page_one = await send(app, "卡池列表 1")
+    page_two = await send(app, "卡池列表 2")
+    assert latest.texts == page_one.texts
+    assert page_one.texts == [
+        "\n".join(f"卡池{i} | char_up | POOL_{i:02}" for i in range(11, 1, -1))
+    ]
+    assert page_two.texts == ["卡池1 | char_up | POOL_01\n卡池0 | char_up | POOL_00"]
+    assert (await send(app, "方舟卡池 01")).texts == ["POOL_01 | 卡池1 | char_up"]
+
+
+async def test_current_pool_without_direct_six_up(app):
+    service, _ = app
+    service.catalog.load().pools[0].up.clear()
+    assert (await send(app, "方舟卡池")).texts == ["测试卡池 | 本期无直接UP六星干员"]
+    assert (await send(app, "卡池列表 1")).texts == ["测试卡池 | 无 | NORMAL_TEST"]
+
+
+@pytest.mark.parametrize("command", ["help", "/help", "帮助", "/帮助"])
+async def test_help_aliases_only_list_commands_without_requiring_a_pool(app, command):
+    service, _ = app
+    before = await view(app)
+    await service.store.db.execute("DELETE FROM settings")
+    (service.catalog.root / "current").unlink()
+    assert parse_command(command) == (command, "")
+    reply = await send(app, command)
+    assert reply.texts == [
+        "方舟十连\n方舟一井\n方舟卡池\n方舟卡池 <关键词>\n"
+        "卡池列表\n卡池列表 <页码>\n切换卡池 <pool_id>\n切换卡池 latest\n"
+        "更新卡池\n查看水位\n查看历史\nhelp | /help | 帮助 | /帮助"
+    ]
+    assert not reply.images
+    assert await view(app) == before
+    assert await send(app, command, group="not-allowed") is None
+
+
+@pytest.mark.parametrize("command", ["help", "/help", "帮助", "/帮助"])
+async def test_help_does_not_accept_arguments(app, command):
+    assert (await send(app, command + " extra")).texts == [f"用法：{command}"]
+
+
+async def test_pity_query_only_shows_misses_and_pool_pulls(app):
+    assert (await send(app, "查看水位")).texts == ["连续未出六星：0抽\n本池累计抽数：0抽"]
+    await send(app, "方舟十连", key="ten")
+    before = await view(app)
+    expected = f"连续未出六星：{before.state.misses}抽\n本池累计抽数：10抽"
+    assert (await send(app, "查看水位")).texts == [expected]
+    assert await view(app) == before
+    await send(app, "方舟一井", key="well")
+    assert (await send(app, "查看水位")).texts == [expected]
+
+
+@pytest.mark.parametrize("pool_id", ["NORMAL_TEST", "normal_test", "NoRmAl_TeSt"])
+async def test_select_pool_id_is_case_insensitive(app, pool_id):
+    service, _ = app
+    reply = await send(app, f"切换卡池 {pool_id}", user="admin")
+    assert reply.texts == ["已切换卡池：NORMAL_TEST | 测试卡池"]
+    assert (await service.store.active())["pool_id"] == "NORMAL_TEST"
+
+
+@pytest.mark.parametrize("keyword", ["latest", "LATEST", "LaTeSt"])
+async def test_select_latest_uses_opening_time_and_stable_id_order(app, keyword):
+    service, clock = app
+    snapshot = service.catalog.load()
+    original = snapshot.pools[0]
+    now = int(clock().timestamp())
+    for pool_id, name, opened_at in [
+        ("Z_LATEST", "同期开池Z", now - 1),
+        ("A_LATEST", "同期开池A", now - 1),
+        ("FUTURE", "未开放池", now + 1),
+        ("ROTATION", "适合多种场合的强力干员", now),
+    ]:
+        snapshot.pools.append(
+            original.model_copy(update={"id": pool_id, "name": name, "opened_at": opened_at})
+        )
+    active = await service.store.active()
+    assert "管理员" in (await send(app, f"切换卡池 {keyword}")).texts[0]
+    assert await service.store.active() == active
+    reply = await send(app, f"切换卡池 {keyword}", user="admin")
+    assert reply.texts == ["已切换卡池：A_LATEST | 同期开池A"]
+    assert await service.store.active() == {"pool_id": "A_LATEST", "version": snapshot.version}
+    assert (await send(app, "方舟卡池", group="g2")).texts == ["同期开池A | char_up"]
+
+
+async def test_select_latest_with_no_available_pools_keeps_active_pool(app):
+    service, _ = app
+    active = await service.store.active()
+    service.catalog.load().pools.clear()
+    reply = await send(app, "切换卡池 latest", user="admin")
+    assert reply.texts == ["暂无可选卡池，请管理员先执行更新卡池。"]
+    assert await service.store.active() == active
+
+
+async def test_select_latest_asset_failure_keeps_active_pool(app):
+    service, _ = app
+    snapshot = service.catalog.load()
+    snapshot.pools.append(snapshot.pools[0].model_copy(update={"id": "NEWEST", "opened_at": 2}))
+    active = await service.store.active()
+    service.renderer.fail = True
+    reply = await send(app, "切换卡池 latest", user="admin")
+    assert "处理失败" in reply.texts[0]
+    assert await service.store.active() == active
 
 
 @pytest.mark.parametrize("arg", ["0", "-1", "1.5", "abc", "999", "１"])
@@ -73,8 +185,8 @@ async def test_legacy_rotation_not_listed_searchable_or_selectable(app):
             }
         )
     )
-    assert (await send(app, "卡池列表")).texts == ["NORMAL_TEST | 测试卡池 | char_up"]
-    assert (await send(app, "卡池列表 1")).texts == ["NORMAL_TEST | 测试卡池"]
+    assert (await send(app, "卡池列表")).texts == ["测试卡池 | char_up | NORMAL_TEST"]
+    assert (await send(app, "卡池列表 1")).texts == ["测试卡池 | char_up | NORMAL_TEST"]
     for keyword in ["适合多种场合", "ROTATION"]:
         assert (await send(app, f"方舟卡池 {keyword}")).texts == ["没有匹配的可选卡池。"]
     reply = await send(app, "切换卡池 ROTATION", user="admin")
@@ -231,6 +343,7 @@ async def test_actual_switches_share_only_the_correct_pity_and_keep_history(app)
     await send(app, "切换卡池 NORMAL_TEST", user="admin")
     returned = await view(app)
     assert returned.state.pulls == 10 and returned.state.misses == 20
+    assert (await send(app, "查看水位")).texts == ["连续未出六星：20抽\n本池累计抽数：10抽"]
 
 
 async def test_optimistic_transaction_prevents_cross_process_lost_update(app):

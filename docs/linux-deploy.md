@@ -3,7 +3,7 @@
 适用 Linux x86_64 / ARM64。主要入口为 Docker Compose；也提供 Python 3.11 原生运行和 systemd 模板。
 部署包包含代码、锁定依赖清单、127 个专属名称卡池及 315 张静态头像；不包含个人 `.env`、SQLite、QQ 登录资料或抽卡结果。
 首次构建或安装需要联网获取基础镜像、Python 依赖和中文字体；卡池与头像种子已经随包提供。
-另附的 `ark-gacha-simulator-0.1.0-linux-amd64-image.tar.gz` 是已经构建好的 x86_64 镜像；使用该镜像可以跳过构建及依赖下载。
+另附的 `ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz` 是已经构建好的 x86_64 镜像；使用该镜像可以跳过构建及依赖下载。
 
 ## Docker Compose 部署
 
@@ -11,7 +11,7 @@
 以下命令在解压后的目录执行，初始化不会覆盖已有 `.env` 或已安装的卡池版本。
 
 ```bash
-tar -xzf ark-gacha-simulator-0.1.0-linux.tar.gz
+tar -xzf ark-gacha-simulator-0.1.1-linux.tar.gz
 cd ark-gacha-simulator
 python3 scripts/linux/configure.py
 chmod 600 .env
@@ -46,7 +46,7 @@ docker compose logs --tail=100 -f bot
 如果使用随附的 **Linux amd64 预构建镜像**，将镜像归档放在部署目录的上一级，然后将上面的 `docker compose build` 替换为：
 
 ```bash
-gzip -dc ../ark-gacha-simulator-0.1.0-linux-amd64-image.tar.gz | docker load
+gzip -dc ../ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz | docker load
 ```
 
 之后仍按顺序执行 `validate`、`list` 和 `select`，启动时使用 `docker compose up -d --no-build`。
@@ -106,6 +106,65 @@ docker compose start bot
 回滚时使用对应旧部署包重新构建；需要回滚业务数据时，停机恢复同一份备份中的 `.env` 和整个 `data/`。
 十分钟十连历史是内存状态，重启后自然失效。
 
+## 升级到 0.1.1
+
+适用于已经使用 0.1.0、部署目录为 `/root/ark-gacha-simulator/ark-gacha-simulator` 的 Linux amd64 实例。
+在服务器上执行；其他安装路径需要相应替换。0.1.1 无需迁移数据库，已有 `.env`、`data/` 和 `napcat/` 保留。
+
+先在部署目录上一级下载新版本的两个压缩包和校验文件：
+
+```bash
+(
+set -eu
+cd /root/ark-gacha-simulator
+
+for asset in \
+  ark-gacha-simulator-0.1.1-linux.tar.gz \
+  ark-gacha-simulator-0.1.1-linux.tar.gz.sha256 \
+  ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz \
+  ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz.sha256
+do
+  curl --fail --location --retry 3 \
+    --output "$asset" \
+    "https://github.com/IgnorantMelon/ark-gacha-simulator/releases/download/v0.1.1/$asset"
+done
+
+sha256sum -c ark-gacha-simulator-0.1.1-linux.tar.gz.sha256
+sha256sum -c ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz.sha256
+)
+```
+
+两个校验均显示 `OK` 后，先加载镜像，再停应用、备份并覆盖部署包：
+
+```bash
+(
+set -eu
+cd /root/ark-gacha-simulator
+docker load --input ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz
+
+cd /root/ark-gacha-simulator/ark-gacha-simulator
+docker compose stop bot
+
+install -d -m 700 /root/ark-gacha-backups
+tar -czf "/root/ark-gacha-backups/state-before-0.1.1-$(date +%Y%m%d-%H%M%S).tar.gz" \
+  .env data compose.yaml
+
+tar -xzf ../ark-gacha-simulator-0.1.1-linux.tar.gz -C ..
+docker compose up -d --no-build --force-recreate bot
+docker compose ps
+docker compose logs --tail=60 bot
+)
+```
+
+每个命令成功后再执行后续命令。升级包只覆盖代码、部署脚本、文档和公开种子数据，不包含 `.env`、运行数据或 NapCat 登录资料。
+此次升级只重建抽卡应用容器，NapCat 可继续运行；应用启动后反向 WebSocket 会重连。十分钟十连历史随重启清空。
+
+在允许群内检查 `帮助`、`方舟卡池`、`卡池列表 1`、`查看水位`；管理员可用 `切换卡池 latest` 或大小写混合的卡池 ID 测试切池。
+`latest` 选择当前已下载数据中的最新可选池，需要刷新上游数据时先执行 `更新卡池`。
+
+如需回滚，停止应用，使用保留的 0.1.0 部署包覆盖代码和 Compose，再加载并启动 `ark-gacha-simulator:0.1.0`。
+本次未改变存储结构，通常无需恢复状态；需要恢复时，再从停机备份恢复 `.env` 与完整 `data/`。
+
 ## 原生 Python 3.11 部署（可选）
 
 以 Debian / Ubuntu 为例，先安装中文字体和 curl：
@@ -145,7 +204,7 @@ sudo journalctl -u ark-gacha -n 100 --no-pager
 ## 构建方式与溯源
 
 ```bash
-sha256sum -c ark-gacha-simulator-0.1.0-linux.tar.gz.sha256
+sha256sum -c ark-gacha-simulator-0.1.1-linux.tar.gz.sha256
 ```
 
 归档内的 `MANIFEST.json` 记录逐文件 SHA-256；`seed/catalog/versions/` 包含卡池覆盖报告及来源哈希。
