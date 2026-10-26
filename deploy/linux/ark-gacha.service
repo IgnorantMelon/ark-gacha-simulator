@@ -1,0 +1,25 @@
+[Unit]
+Description=Arknights QQ gacha bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=arkgacha
+Group=arkgacha
+WorkingDirectory=/opt/ark-gacha-simulator
+ExecStart=/opt/ark-gacha-simulator/.venv/bin/ark-gacha run
+Environment=PYTHONUTF8=1
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/ark-gacha-simulator/data
+
+[Install]
+WantedBy=multi-user.target

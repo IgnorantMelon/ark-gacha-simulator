@@ -1,0 +1,14 @@
+# Linux 部署包验证（2026-10-26）
+
+- 已构建 `ark-gacha-simulator:0.1.0`，实测运行平台为 Linux amd64。
+- 基础镜像：官方 GHCR uv 0.11.6 / Python 3.11 / Debian trixie slim，按镜像摘要固定。
+- Python 实际版本：3.11.15；生产环境按 `uv.lock` 安装，不含开发依赖。
+- Windows 与 Linux 容器内分别执行全部测试，均为 **82 passed**。
+- Linux 下实际执行部署包初始化、全量校验及三百抽中文图片渲染：127 池、38,100 抽、315 张头像通过。
+- 原生 `scripts/linux/setup.sh` 已在 Linux 文件系统内成功创建虚拟环境、安装锁定依赖并读取卡池。
+- Bash 语法检查与 Compose 配置检查通过；真实 OneBot 反向 WebSocket 的自动测试通过。
+- 部署包逐文件 SHA-256、POSIX 脚本权限和 LF 换行已检查；不包含本机 `.env`、SQLite 或 `.venv`。
+
+ARM64 可从源码包构建，基础镜像提供 ARM64 版本；本次未在 ARM64 上运行测试。
+systemd 模板已提供，但没有在真实服务器上安装并启用服务。
+真实 QQ 登录、群消息投递及长期在线稳定性仍需在目标主机配置 NapCat 后验收。

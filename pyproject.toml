@@ -1,0 +1,39 @@
+[project]
+name = "ark-gacha-simulator"
+version = "0.1.0"
+description = "Non-official QQ bot for historical Arknights headhunting simulation"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "nonebot2[fastapi]>=2.4,<3",
+  "nonebot-adapter-onebot>=2.4,<3",
+  "httpx>=0.28,<1",
+  "pydantic>=2.10,<3",
+  "pydantic-settings>=2.8,<3",
+  "aiosqlite>=0.21,<1",
+  "pillow>=11,<13",
+  "tzdata>=2025.1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.11,<1", "websockets>=15,<17"]
+
+[project.scripts]
+ark-gacha = "ark_gacha.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ark_gacha"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
