@@ -3,8 +3,10 @@ import asyncio
 import json
 import random
 from datetime import UTC, datetime
+from importlib.resources import files
 from pathlib import Path
 
+from .auto_reply import load_rules
 from .catalog import Catalog, validate_pool
 from .config import Settings
 from .engine import simulate
@@ -15,6 +17,27 @@ from .storage import Store
 
 async def execute(args) -> None:
     settings = Settings()
+    if args.command == "replies":
+        path = args.file if args.file is not None else settings.auto_replies_file
+        if args.action == "init":
+            template = files("ark_gacha").joinpath("assets/auto-replies.example.toml").read_bytes()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with path.open("xb") as target:
+                    target.write(template)
+            except FileExistsError:
+                raise UserError(f"规则文件已存在，未覆盖：{path.resolve()}") from None
+            print(f"已生成规则文件（默认关闭，编辑后设置 enabled = true）：{path.resolve()}")
+        else:
+            ruleset = await asyncio.to_thread(load_rules, path)
+            pending = sum(not rule.reply.strip() for rule in ruleset.rules)
+            print(
+                f"规则校验通过：{len(ruleset.rules)} 条启用规则；"
+                f"其中 {pending} 条回复待填写；"
+                f"功能{'开启' if ruleset.enabled else '关闭'}。"
+            )
+            print(path.resolve())
+        return
     catalog = Catalog(settings.data_dir / "catalog")
     if args.command == "sync":
         report = await catalog.sync()
@@ -25,7 +48,7 @@ async def execute(args) -> None:
         print(settings.data_dir / "catalog" / "versions" / f"{report['version']}.report.json")
         return
     snapshot = catalog.load()
-    available = catalog.available(snapshot, datetime.now(UTC))
+    available = catalog.available(snapshot)
     if args.command == "validate":
         for pool in snapshot.pools:
             validate_pool(pool)
@@ -35,12 +58,15 @@ async def execute(args) -> None:
         characters = sorted({c for p in snapshot.pools for cs in p.roster.values() for c in cs})
         if args.assets:
             renderer = Renderer(settings.data_dir / "avatars", settings.font_path)
-            await renderer.ensure(characters)
+            try:
+                await renderer.ensure(characters)
+            finally:
+                await renderer.close()
         audit = {
             "version": snapshot.version,
             "checked_at": datetime.now(UTC).isoformat(),
             "validated_pools": len(snapshot.pools),
-            "opened_pools": len(available),
+            "available_pools": len(available),
             "draws_per_pool": 300,
             "total_draws": len(snapshot.pools) * 300,
             "unique_avatars": len(characters),
@@ -51,7 +77,7 @@ async def execute(args) -> None:
             path.write_text, json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         print(
-            f"校验通过：{len(snapshot.pools)} 池，其中已开放 {len(available)} 池；"
+            f"校验通过：{len(snapshot.pools)} 池，其中可选 {len(available)} 池；"
             f"已模拟 {len(snapshot.pools) * 300} 抽。"
         )
         if args.assets:
@@ -67,30 +93,33 @@ async def execute(args) -> None:
         return
     pool = next((p for p in available if p.id == args.pool), None)
     if pool is None:
-        raise UserError("卡池不存在、尚未开放或未通过校验。")
+        raise UserError("卡池不存在或未通过校验。")
     renderer = Renderer(settings.data_dir / "avatars", settings.font_path)
-    if args.command == "select":
-        await renderer.prepare(pool)
-        store = Store(settings.database)
-        await store.open()
-        try:
-            await store.set_active(pool.id, snapshot.version)
-        finally:
-            await store.close()
-        print(f"已切换：{pool.id} | {pool.name}")
-        return
-    if args.command == "demo":
-        mode = DrawMode(args.mode)
-        results, _ = simulate(pool, DrawState(), 10 if mode == DrawMode.TEN else 300)
-        images = await renderer.render(pool, snapshot.operators, results, mode, 0)
-        destination = Path(args.output)
-        await asyncio.to_thread(destination.mkdir, parents=True, exist_ok=True)
-        for i, image in enumerate(images, 1):
-            path = destination / f"{mode.value}-{i}.png"
-            await asyncio.to_thread(path.write_bytes, image)
-            print(path.resolve())
-        if args.details:
-            print(json.dumps([r.model_dump() for r in results], ensure_ascii=False))
+    try:
+        if args.command == "select":
+            await renderer.prepare(pool)
+            store = Store(settings.database)
+            await store.open()
+            try:
+                await store.set_active(pool.id, snapshot.version)
+            finally:
+                await store.close()
+            print(f"已切换：{pool.id} | {pool.name}")
+            return
+        if args.command == "demo":
+            mode = DrawMode(args.mode)
+            results, _ = simulate(pool, DrawState(), 10 if mode == DrawMode.TEN else 300)
+            images = await renderer.render(pool, snapshot.operators, results, mode, 0)
+            destination = Path(args.output)
+            await asyncio.to_thread(destination.mkdir, parents=True, exist_ok=True)
+            for i, image in enumerate(images, 1):
+                path = destination / f"{mode.value}-{i}.png"
+                await asyncio.to_thread(path.write_bytes, image)
+                print(path.resolve())
+            if args.details:
+                print(json.dumps([r.model_dump() for r in results], ensure_ascii=False))
+    finally:
+        await renderer.close()
 
 
 def main():
@@ -100,6 +129,13 @@ def main():
         commands.add_parser(name)
     validation = commands.add_parser("validate")
     validation.add_argument("--assets", action="store_true", help="下载并检查全部历史池头像")
+    replies = commands.add_parser("replies", help="初始化或离线校验自动回复规则")
+    actions = replies.add_subparsers(dest="action", required=True)
+    for name in ["init", "check"]:
+        action = actions.add_parser(name)
+        action.add_argument(
+            "--file", type=Path, help="规则文件路径，默认 ARK_DATA_DIR/auto-replies.toml"
+        )
     listing = commands.add_parser("list")
     listing.add_argument("--limit", type=int, default=10)
     selection = commands.add_parser("select")

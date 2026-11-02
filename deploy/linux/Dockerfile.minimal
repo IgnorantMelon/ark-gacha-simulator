@@ -1,0 +1,10 @@
+FROM ark-gacha-simulator:0.1.3
+
+USER root
+COPY wheels/*.whl /tmp/ark-upgrade/
+RUN uv pip install --python /app/.venv/bin/python --no-deps --offline /tmp/ark-upgrade/*.whl \
+    && uv pip check --python /app/.venv/bin/python \
+    && rm -r /tmp/ark-upgrade
+COPY overlay/src /app/src
+COPY overlay/pyproject.toml overlay/uv.lock /app/
+USER 10001:10001

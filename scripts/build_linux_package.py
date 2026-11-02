@@ -24,10 +24,21 @@ def collect_files(root: Path, data: Path) -> dict[str, bytes]:
         "README.md",
         "CHANGELOG.md",
         "docs/rules.md",
+        "docs/auto-replies.md",
+        "docs/incremental-upgrade.md",
+        "docs/minimal-upgrade.md",
         "docs/linux-deploy.md",
         "deploy/linux/ark-gacha.service",
         "deploy/linux/VERIFIED.md",
+        "deploy/linux/Dockerfile.incremental",
+        "deploy/linux/Dockerfile.minimal",
+        "deploy/linux/baseline-0.1.2.toml",
+        "deploy/linux/baseline-0.1.3.toml",
         "scripts/build_linux_package.py",
+        "scripts/build_incremental_package.py",
+        "scripts/build_minimal_package.py",
+        "src/ark_gacha/assets/unknown-operator-180.png",
+        "src/ark_gacha/assets/auto-replies.example.toml",
     ]:
         files[relative] = (root / relative).read_bytes()
     files["README-LINUX.md"] = files["docs/linux-deploy.md"]

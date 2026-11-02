@@ -2,7 +2,7 @@ name: ark-gacha-simulator
 
 services:
   bot:
-    image: ark-gacha-simulator:0.1.1
+    image: ark-gacha-simulator:0.1.4
     build:
       context: .
       dockerfile: Dockerfile

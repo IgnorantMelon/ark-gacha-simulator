@@ -143,7 +143,7 @@ class Store:
                     or mode == DrawMode.WELL
                     and before.well >= 1
                 ):
-                    raise UserError("今日该类寻访次数已用完，北京时间04:00刷新。")
+                    raise UserError("今日寻访凭证不足。")
                 await self.db.execute(
                     "INSERT INTO users VALUES (?, ?) ON CONFLICT(user_id) "
                     "DO UPDATE SET revision=excluded.revision",

@@ -107,65 +107,16 @@ docker compose start bot
 回滚时使用对应旧部署包重新构建；需要回滚业务数据时，停机恢复同一份备份中的 `.env` 和整个 `data/`。
 十分钟十连历史是内存状态，重启后自然失效。
 
-## 升级到 0.1.1
+## 升级到 0.1.4
 
-适用于已经使用 0.1.0、部署目录为 `/root/ark-gacha-simulator/ark-gacha-simulator` 的 Linux amd64 实例。
-在服务器上执行；其他安装路径需要相应替换。0.1.1 无需迁移数据库，已有 `.env`、`data/` 和 `napcat/` 保留。
+已安装 0.1.3 的 Linux amd64 Docker Compose 实例使用 [最小离线升级手顺](minimal-upgrade.md)。
+只需上传 `ark-gacha-upgrade-0.1.3-to-0.1.4-linux-amd64.tar.gz` 与校验文件，
+复用服务器上的 0.1.3 镜像和既有依赖，仅额外安装包内新增的 `regex` wheel。
+脚本保留 `.env`、`data/`、抽卡进度、现有自动回复规则和 NapCat 登录资料，并提供备份与失败回滚。
 
-先在开发机项目目录的 PowerShell 中，将两个压缩包和校验文件上传到服务器部署目录上一级。
-把 `服务器公网IP` 换成实际地址；SSH 使用其他端口时，给 `scp` 添加 `-P 端口号`：
-
-```powershell
-scp `
-  .\dist\ark-gacha-simulator-0.1.1-linux.tar.gz `
-  .\dist\ark-gacha-simulator-0.1.1-linux.tar.gz.sha256 `
-  .\dist\ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz `
-  .\dist\ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz.sha256 `
-  root@服务器公网IP:/root/ark-gacha-simulator/
-```
-
-以下在服务器上执行，先校验文件：
-
-```bash
-(
-set -eu
-cd /root/ark-gacha-simulator
-
-sha256sum -c ark-gacha-simulator-0.1.1-linux.tar.gz.sha256
-sha256sum -c ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz.sha256
-)
-```
-
-两个校验均显示 `OK` 后，先加载镜像，再停应用、备份并覆盖部署包：
-
-```bash
-(
-set -eu
-cd /root/ark-gacha-simulator
-docker load --input ark-gacha-simulator-0.1.1-linux-amd64-image.tar.gz
-
-cd /root/ark-gacha-simulator/ark-gacha-simulator
-docker compose stop bot
-
-install -d -m 700 /root/ark-gacha-backups
-tar -czf "/root/ark-gacha-backups/state-before-0.1.1-$(date +%Y%m%d-%H%M%S).tar.gz" \
-  .env data compose.yaml
-
-tar -xzf ../ark-gacha-simulator-0.1.1-linux.tar.gz -C ..
-docker compose up -d --no-build --force-recreate bot
-docker compose ps
-docker compose logs --tail=60 bot
-)
-```
-
-每个命令成功后再执行后续命令。升级包只覆盖代码、部署脚本、文档和公开种子数据，不包含 `.env`、运行数据或 NapCat 登录资料。
-此次升级只重建抽卡应用容器，NapCat 可继续运行；应用启动后反向 WebSocket 会重连。十分钟十连历史随重启清空。
-
-在允许群内检查 `帮助`、`方舟卡池`、`卡池列表 1`、`查看水位`；管理员可用 `切换卡池 latest` 或大小写混合的卡池 ID 测试切池。
-`latest` 选择当前已下载数据中的最新可选池，需要刷新上游数据时先执行 `更新卡池`。
-
-如需回滚，停止应用，使用保留的 0.1.0 部署包覆盖代码和 Compose，再加载并启动 `ark-gacha-simulator:0.1.0`。
-本次未改变存储结构，通常无需恢复状态；需要恢复时，再从停机备份恢复 `.env` 与完整 `data/`。
+0.1.2 实例先按 [0.1.2 → 0.1.3 手顺](incremental-upgrade.md) 升级；
+0.1.1 → 0.1.2 的旧增量包继续保留在开发机 `dist/`。
+本页上方首次安装示例使用保留的 0.1.1 完整部署包；0.1.4 本次交付为增量包。
 
 ## 原生 Python 3.11 部署（可选）
 

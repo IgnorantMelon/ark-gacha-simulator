@@ -77,7 +77,7 @@ async def test_real_reverse_websocket_text_images_and_failed_delivery_history(ap
             )
             message_id = 0
 
-            async def command(text, *, fail_delivery=False):
+            async def command(text, *, fail_delivery=False, user_id=123):
                 nonlocal message_id
                 message_id += 1
                 await ws.send(
@@ -90,12 +90,12 @@ async def test_real_reverse_websocket_text_images_and_failed_delivery_history(ap
                             "sub_type": "normal",
                             "message_id": message_id,
                             "group_id": 100,
-                            "user_id": 123,
+                            "user_id": user_id,
                             "anonymous": None,
                             "message": [{"type": "text", "data": {"text": text}}],
                             "raw_message": text,
                             "font": 0,
-                            "sender": {"user_id": 123, "nickname": "Test", "role": "member"},
+                            "sender": {"user_id": user_id, "nickname": "Test", "role": "member"},
                         }
                     )
                 )
@@ -129,20 +129,37 @@ async def test_real_reverse_websocket_text_images_and_failed_delivery_history(ap
             for pool_id in ["normal_test", "LATEST"]:
                 switched = await command(f"切换卡池 {pool_id}")
                 assert switched[0]["data"]["text"] == "已切换卡池：NORMAL_TEST | 测试卡池"
-            pity = await command("查看水位")
-            assert pity[0]["data"]["text"] == "连续未出六星：0抽\n本池累计抽数：0抽"
+
+            def mentioned_text(message, user_id=123):
+                assert message[0] == {"type": "at", "data": {"qq": str(user_id)}}
+                assert all(segment["type"] == "text" for segment in message[1:])
+                return "".join(segment["data"]["text"] for segment in message[1:]).lstrip()
+
+            def mentioned_image(message):
+                assert message[:2] == [
+                    {"type": "at", "data": {"qq": "123"}},
+                    {"type": "text", "data": {"text": " "}},
+                ]
+                assert message[2]["type"] == "image"
+                return message[2]["data"]["file"]
+
+            pity = await command("查看水位", user_id=456)
+            assert mentioned_text(pity, 456) == "连续未出六星：0抽\n本池累计抽数：0抽"
+            missing_history = await command("查看历史", user_id=456)
+            assert "暂无" in mentioned_text(missing_history, 456)
+            for name in ["方舟十连", "方舟一井", "查看水位", "查看历史"]:
+                assert mentioned_text(await command(name + " extra")) == f"用法：{name}"
             ten = await command("方舟十连", fail_delivery=True)
-            assert ten[0]["type"] == "image"
-            payload = ten[0]["data"]["file"]
+            payload = mentioned_image(ten)
             assert payload.startswith("base64://")
             with Image.open(io.BytesIO(base64.b64decode(payload[9:]))) as image:
                 assert image.format == "PNG" and image.size == (898, 554)
             history = await command("查看历史")
             assert history == ten  # exact bytes despite the earlier OneBot send failure
             well = await command("方舟一井")
-            assert well[0]["type"] == "image"
-            with Image.open(io.BytesIO(base64.b64decode(well[0]["data"]["file"][9:]))) as image:
+            with Image.open(io.BytesIO(base64.b64decode(mentioned_image(well)[9:]))) as image:
                 assert image.format == "PNG" and image.width == 1068
+            assert mentioned_text(await command("方舟一井")) == "今日寻访凭证不足。"
             assert await command("查看历史") == ten
     finally:
         if process.returncode is None:

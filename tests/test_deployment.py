@@ -83,6 +83,14 @@ def test_linux_archive_has_verified_manifest_posix_scripts_and_no_private_files(
         assert b"\r\n" not in tar.extractfile(shell).read()
         assert prefix + "README-LINUX.md" in names
         assert prefix + "compose.yaml" in names
+        assert prefix + "docs/auto-replies.md" in names
+        assert prefix + "src/ark_gacha/auto_reply.py" in names
+        assert prefix + "src/ark_gacha/assets/auto-replies.example.toml" in names
+        assert not any(name.endswith("/auto-replies.toml") for name in names)
+        assert (
+            tar.extractfile(prefix + "src/ark_gacha/assets/unknown-operator-180.png").read()
+            == (ROOT / "src/ark_gacha/assets/unknown-operator-180.png").read_bytes()
+        )
     expected = hashlib.sha256(archive.read_bytes()).hexdigest()
     assert archive.with_name(archive.name + ".sha256").read_bytes() == (
         f"{expected}  {archive.name}\n".encode()

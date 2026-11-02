@@ -18,3 +18,7 @@ class Settings(BaseSettings):
     @property
     def database(self) -> Path:
         return self.data_dir / "bot.sqlite3"
+
+    @property
+    def auto_replies_file(self) -> Path:
+        return self.data_dir / "auto-replies.toml"

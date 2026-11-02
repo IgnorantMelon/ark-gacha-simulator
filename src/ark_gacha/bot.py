@@ -7,6 +7,7 @@ from nonebot import on_message
 from nonebot.adapters.onebot.v11 import Adapter, Bot, GroupMessageEvent, MessageSegment
 from nonebot.rule import Rule
 
+from .auto_reply import AutoReplyService
 from .catalog import Catalog
 from .config import Settings
 from .render import Renderer
@@ -23,6 +24,7 @@ def run_bot() -> None:
     if settings.host not in {"127.0.0.1", "::1", "localhost"}:
         raise SystemExit("本机部署仅允许监听回环地址。")
     store = Store(settings.database)
+    auto_reply = AutoReplyService(settings.auto_replies_file, settings.allowed_groups)
     service = GachaService(
         settings,
         store,
@@ -45,6 +47,7 @@ def run_bot() -> None:
     async def startup():
         nonlocal cleanup_task
         await store.open()
+        await auto_reply.start()
 
         async def cleanup():
             while True:
@@ -55,11 +58,13 @@ def run_bot() -> None:
 
     @driver.on_shutdown
     async def shutdown():
+        await auto_reply.close()
         if cleanup_task:
             cleanup_task.cancel()
             with suppress(asyncio.CancelledError):
                 await cleanup_task
         service.history.clear()
+        await service.renderer.close()
         await store.close()
 
     async def is_command(event: GroupMessageEvent) -> bool:
@@ -80,13 +85,50 @@ def run_bot() -> None:
         )
         if reply is None:
             return
+        parsed = parse_command(event.get_plaintext())
+        at_sender = parsed is not None and parsed[0] in {
+            "方舟十连",
+            "方舟一井",
+            "查看水位",
+            "查看历史",
+        }
         try:
             for text in reply.texts:
-                await bot.send(event, text)
+                await bot.send(event, text, at_sender=at_sender)
             for content in reply.images:
-                await bot.send(event, MessageSegment.image(content))
+                await bot.send(event, MessageSegment.image(content), at_sender=at_sender)
         except Exception as exc:
             # Draws are already committed. Only ten-pulls have an in-memory history.
             log.error("QQ delivery failed (%s)", type(exc).__name__)
+
+    async def is_regular_message(event: GroupMessageEvent) -> bool:
+        return (
+            str(event.group_id) in settings.allowed_groups
+            and parse_command(event.get_plaintext()) is None
+        )
+
+    replies = on_message(rule=Rule(is_regular_message), priority=20, block=False)
+
+    @replies.handle()
+    async def handle_auto_reply(bot: Bot, event: GroupMessageEvent):
+        # NoneBot removes leading/trailing @self and handles replies before routing.
+        # Only a real @self segment in the original message satisfies this condition.
+        at_self = any(
+            segment.type == "at" and str(segment.data.get("qq", "")) == bot.self_id
+            for segment in event.original_message
+        )
+        reply = await auto_reply.reply_for(
+            bot.self_id,
+            str(event.group_id),
+            str(event.user_id),
+            str(event.message_id),
+            event.original_message.extract_plain_text(),
+            at_self=at_self,
+        )
+        if reply is not None:
+            try:
+                await bot.send(event, MessageSegment.text(reply.reply), at_sender=reply.at_sender)
+            except Exception as exc:
+                log.error("Auto-reply delivery failed (rule=%s, %s)", reply.id, type(exc).__name__)
 
     nonebot.run()

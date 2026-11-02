@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 
 from ark_gacha.models import DrawMode, DrawState
@@ -57,6 +58,26 @@ async def test_current_pool_without_direct_six_up(app):
     assert (await send(app, "卡池列表 1")).texts == ["测试卡池 | 无 | NORMAL_TEST"]
 
 
+async def test_failed_update_keeps_active_pool_and_draws_available(app, monkeypatch):
+    service, _ = app
+    active = await service.store.active()
+    version = service.catalog.load().version
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(
+        "ark_gacha.catalog.httpx.AsyncClient",
+        lambda **kwargs: client_type(
+            transport=httpx.MockTransport(lambda request: httpx.Response(503)), **kwargs
+        ),
+    )
+    reply = await send(app, "更新卡池", user="admin")
+    assert reply.texts == ["卡池更新失败。"]
+    assert await service.store.active() == active
+    assert service.catalog.load().version == version
+    assert (await send(app, "方舟卡池")).texts == ["测试卡池 | char_up"]
+    assert (await send(app, "卡池列表")).texts == ["测试卡池 | char_up | NORMAL_TEST"]
+    assert (await send(app, "方舟十连", key="after-failed-sync")).images
+
+
 @pytest.mark.parametrize("command", ["help", "/help", "帮助", "/帮助"])
 async def test_help_aliases_only_list_commands_without_requiring_a_pool(app, command):
     service, _ = app
@@ -106,8 +127,8 @@ async def test_select_latest_uses_opening_time_and_stable_id_order(app, keyword)
     original = snapshot.pools[0]
     now = int(clock().timestamp())
     for pool_id, name, opened_at in [
-        ("Z_LATEST", "同期开池Z", now - 1),
-        ("A_LATEST", "同期开池A", now - 1),
+        ("Z_LATEST", "同期开池Z", now + 2),
+        ("A_LATEST", "同期开池A", now + 2),
         ("FUTURE", "未开放池", now + 1),
         ("ROTATION", "适合多种场合的强力干员", now),
     ]:
@@ -121,6 +142,32 @@ async def test_select_latest_uses_opening_time_and_stable_id_order(app, keyword)
     assert reply.texts == ["已切换卡池：A_LATEST | 同期开池A"]
     assert await service.store.active() == {"pool_id": "A_LATEST", "version": snapshot.version}
     assert (await send(app, "方舟卡池", group="g2")).texts == ["同期开池A | char_up"]
+
+
+@pytest.mark.parametrize("command", ["方舟十连", "方舟一井"])
+async def test_future_pool_can_be_queried_selected_and_drawn(app, command):
+    service, clock = app
+    snapshot = service.catalog.load()
+    snapshot.pools.append(
+        snapshot.pools[0].model_copy(
+            update={
+                "id": "FUTURE",
+                "name": "未来卡池",
+                "opened_at": int(clock().timestamp()) + 86400,
+            }
+        )
+    )
+    assert "未来卡池 | char_up | FUTURE" in (await send(app, "卡池列表")).texts[0]
+    assert (await send(app, "方舟卡池 未来")).texts == ["FUTURE | 未来卡池 | char_up"]
+    assert (await send(app, "切换卡池 FUTURE", user="admin")).texts == [
+        "已切换卡池：FUTURE | 未来卡池"
+    ]
+    assert (await send(app, "方舟卡池")).texts == ["未来卡池 | char_up"]
+    assert (await send(app, "查看水位")).texts == ["连续未出六星：0抽\n本池累计抽数：0抽"]
+    reply = await send(app, command)
+    assert reply.images and not reply.texts
+    state = await view(app, pool_id="FUTURE")
+    assert (state.ten, state.well) == ((1, 0) if command == "方舟十连" else (0, 1))
 
 
 async def test_select_latest_with_no_available_pools_keeps_active_pool(app):
@@ -139,7 +186,7 @@ async def test_select_latest_asset_failure_keeps_active_pool(app):
     active = await service.store.active()
     service.renderer.fail = True
     reply = await send(app, "切换卡池 latest", user="admin")
-    assert "处理失败" in reply.texts[0]
+    assert reply.texts == ["处理失败，请稍后再试。"]
     assert await service.store.active() == active
 
 
@@ -222,7 +269,7 @@ async def test_no_active_pool_and_generation_failure_do_not_charge(app):
     service.renderer.fail = False
     await service.store.db.execute("DELETE FROM settings")
     reply = await send(app, "方舟十连")
-    assert "尚未选择" in reply.texts[0] and (await view(app)).ten == 0
+    assert reply.texts == ["尚未选择卡池。"] and (await view(app)).ten == 0
 
 
 async def test_cross_group_limit_and_concurrency(app):
@@ -233,7 +280,7 @@ async def test_cross_group_limit_and_concurrency(app):
     assert (await view(app)).ten == 3
     assert (await view(app)).state.pulls == 30
     assert (await send(app, "方舟一井", key="well")).images
-    assert "次数已用完" in (await send(app, "方舟一井", key="well2")).texts[0]
+    assert (await send(app, "方舟一井", key="well2")).texts == ["今日寻访凭证不足。"]
 
 
 async def test_duplicate_event_is_not_charged_twice(app):

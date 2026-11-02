@@ -1,0 +1,19 @@
+# 填写下面两处 reply 后，将总开关 enabled 改为 true。
+# reply 留空或只有空白时，该规则暂不参与匹配。
+version = 1
+enabled = false
+reload_interval_seconds = 5
+default_cooldown_seconds = 30
+
+[[rules]]
+id = "sl"
+pattern = '#sl'
+mode = "fullmatch"
+reply = ""
+
+[[rules]]
+id = "who-is"
+pattern = '是谁'
+mode = "search"
+require_at_self = true
+reply = ""

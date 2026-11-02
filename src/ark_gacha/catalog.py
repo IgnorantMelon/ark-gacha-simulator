@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -21,7 +22,17 @@ CHARACTER_URL = (
     "https://raw.githubusercontent.com/Kengxxiao/ArknightsGameData/"
     "master/zh_CN/gamedata/excel/character_table.json"
 )
+CLIENT_CDN_URL = (
+    "https://jsd.onmicrosoft.cn/gh/Kengxxiao/ArknightsGameData@master/"
+    "zh_CN/gamedata/excel/gacha_table.json"
+)
+CHARACTER_CDN_URL = (
+    "https://jsd.onmicrosoft.cn/gh/Kengxxiao/ArknightsGameData@master/"
+    "zh_CN/gamedata/excel/character_table.json"
+)
 DETAIL_URL = "https://weedy.prts.wiki/gacha_table.json"
+DOWNLOAD_TIMEOUT = httpx.Timeout(20, connect=5)
+log = logging.getLogger(__name__)
 SUPPORTED = {"NORMAL", "SINGLE", "DOUBLE", "CLASSIC", "CLASSIC_DOUBLE", "LIMITED", "LINKAGE"}
 GENERIC_POOL_NAMES = {"适合多种场合的强力干员"}
 
@@ -171,25 +182,108 @@ class Catalog:
         return self._snapshots[version]
 
     @staticmethod
-    def available(snapshot: CatalogSnapshot, now: datetime) -> list[PoolDefinition]:
+    def available(snapshot: CatalogSnapshot) -> list[PoolDefinition]:
         return sorted(
-            (p for p in snapshot.pools if p.opened_at <= now.timestamp() and is_named_pool(p.name)),
+            (p for p in snapshot.pools if is_named_pool(p.name)),
             key=lambda p: (-p.opened_at, p.id),
         )
 
     async def sync(self) -> dict:
         async with self.sync_lock:
-            urls = {"client": CLIENT_URL, "details": DETAIL_URL, "operators": CHARACTER_URL}
-            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            try:
+                return await self._sync()
+            except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError, UserError) as exc:
+                log.warning("Catalog update failed (%s)", type(exc).__name__)
+                raise UserError("卡池更新失败。") from None
 
-                async def fetch(key, url):
-                    response = await client.get(url)
-                    response.raise_for_status()
-                    return key, response.content
+    @staticmethod
+    async def _fetch_json(client: httpx.AsyncClient, key: str, url: str) -> tuple[dict, bytes]:
+        response = await client.get(url, timeout=DOWNLOAD_TIMEOUT)
+        response.raise_for_status()
+        payload = json.loads(response.content)
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid source object")
+        if key == "operators":
+            if len(payload) < 100 or any(
+                not isinstance(value, dict) or not isinstance(value.get("name"), str)
+                for value in payload.values()
+            ):
+                raise ValueError("Incomplete operator dictionary")
+        else:
+            entries = payload.get("gachaPoolClient")
+            if (
+                not isinstance(entries, list)
+                or len(entries) < 100
+                or any(
+                    not isinstance(entry, dict) or not isinstance(entry.get("gachaPoolId"), str)
+                    for entry in entries
+                )
+                or len({entry["gachaPoolId"] for entry in entries}) != len(entries)
+            ):
+                raise ValueError("Incomplete pool table")
+        return payload, response.content
 
-                bodies = dict(await asyncio.gather(*(fetch(k, v) for k, v in urls.items())))
-            payloads = {k: json.loads(v) for k, v in bodies.items()}
-            return await asyncio.to_thread(self.publish, payloads, bodies, urls)
+    async def _sync(self) -> dict:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            # PRTS has no verified mirror; retry once before keeping the old snapshot.
+            for attempt in range(2):
+                try:
+                    detail, detail_body = await self._fetch_json(client, "details", DETAIL_URL)
+                    break
+                except (httpx.HTTPError, ValueError):
+                    if attempt == 1:
+                        raise
+                    await asyncio.sleep(0.3)
+
+            # Download both tables from the same provider, including on fallback.
+            for source in (
+                {"client": CLIENT_URL, "operators": CHARACTER_URL},
+                {"client": CLIENT_CDN_URL, "operators": CHARACTER_CDN_URL},
+            ):
+                results = await asyncio.gather(
+                    *(self._fetch_json(client, key, url) for key, url in source.items()),
+                    return_exceptions=True,
+                )
+                try:
+                    for result in results:
+                        if isinstance(result, BaseException):
+                            raise result
+                    payloads = {"details": detail}
+                    bodies = {"details": detail_body}
+                    for key, (payload, body) in zip(source, results, strict=True):
+                        payloads[key], bodies[key] = payload, body
+                    await asyncio.to_thread(self._check_consistency, payloads)
+                except (httpx.HTTPError, ValueError, KeyError, TypeError, UserError) as exc:
+                    log.warning("Catalog source unavailable (%s)", type(exc).__name__)
+                    continue
+                urls = {"details": DETAIL_URL, **source}
+                return await asyncio.to_thread(self.publish, payloads, bodies, urls)
+        raise UserError("所有卡池数据下载源均不可用。")
+
+    def _check_consistency(self, payloads: dict) -> None:
+        """Reject stale/incompatible cache combinations before publishing any files."""
+        entries = payloads["client"]["gachaPoolClient"]
+        details = {p["gachaPoolId"]: p for p in payloads["details"]["gachaPoolClient"]}
+        characters = payloads["operators"]
+        ids = {p["gachaPoolId"] for p in entries}
+        try:
+            previous = self.load()
+        except UserError:
+            previous = None
+        if previous and any(p.id not in ids for p in previous.pools):
+            raise ValueError("Source is missing previously published pools")
+        for entry in entries:
+            if not is_named_pool(entry.get("gachaPoolName") or ""):
+                continue
+            if entry["gachaRuleType"] not in SUPPORTED:
+                continue
+            info = details[entry["gachaPoolId"]]["gachaPoolDetail"]["detailInfo"]
+            if any(
+                char not in characters
+                for group in info["availCharInfo"]["perAvailList"]
+                for char in group["charIdList"]
+            ):
+                raise ValueError("Operator dictionary does not match pool details")
 
     def publish(self, payloads: dict, bodies: dict, urls: dict) -> dict:
         details = {p["gachaPoolId"]: p for p in payloads["details"]["gachaPoolClient"]}
@@ -262,15 +356,22 @@ class Catalog:
         (self.root / "versions").mkdir(exist_ok=True)
         (self.root / "sources" / version).mkdir(parents=True, exist_ok=True)
         for key, body in bodies.items():
-            (self.root / "sources" / version / f"{key}.json").write_bytes(body)
+            self._write_atomic(self.root / "sources" / version / f"{key}.json", body)
         target = self.root / "versions" / f"{version}.json"
         if not target.exists():
-            temp = target.with_suffix(f".{uuid.uuid4().hex}.tmp")
-            temp.write_text(snapshot.model_dump_json(), encoding="utf-8")
-            os.replace(temp, target)
+            self._write_atomic(target, snapshot.model_dump_json().encode("utf-8"))
         report_path = self.root / "versions" / f"{version}.report.json"
-        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        pointer = self.root / f"current.{uuid.uuid4().hex}.tmp"
-        pointer.write_text(version, encoding="utf-8")
-        os.replace(pointer, self.root / "current")
+        self._write_atomic(
+            report_path, json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
+        )
+        self._write_atomic(self.root / "current", version.encode("utf-8"))
         return report
+
+    @staticmethod
+    def _write_atomic(path: Path, body: bytes) -> None:
+        temp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        try:
+            temp.write_bytes(body)
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)

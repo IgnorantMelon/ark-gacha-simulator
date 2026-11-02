@@ -98,10 +98,10 @@ class GachaService:
     async def current(self):
         active = await self.store.active()
         if active is None:
-            raise UserError("尚未选择卡池，请管理员使用切换卡池 <pool_id>。")
+            raise UserError("尚未选择卡池。")
         snapshot = self.catalog.load(active["version"])
         pool = next((p for p in snapshot.pools if p.id == active["pool_id"]), None)
-        if pool is None or pool.opened_at > self.clock().timestamp():
+        if pool is None:
             raise UserError("当前卡池不可用，请管理员重新选择。")
         if not is_named_pool(pool.name):
             raise UserError("当前卡池没有专属名称，已不再支持，请管理员使用切换卡池 <pool_id>。")
@@ -171,7 +171,9 @@ class GachaService:
         except Exception as exc:
             # Never include event contents, credentials, draw lists or exception messages.
             log.error("Command failed (%s)", type(exc).__name__)
-            return Reply(texts=["处理失败，请稍后再试；未成功生成并提交的寻访不会扣次数。"])
+            return Reply(
+                texts=["卡池更新失败。" if command == "更新卡池" else "处理失败，请稍后再试。"]
+            )
 
     async def pool_query(self, arg: str) -> Reply:
         if not arg:
@@ -185,14 +187,14 @@ class GachaService:
         key = arg.casefold()
         pools = [
             p
-            for p in self.catalog.available(snapshot, self.clock())
+            for p in self.catalog.available(snapshot)
             if key in p.id.casefold() or key in p.name.casefold()
         ]
         return self.pool_rows(snapshot, pools)
 
     def pool_list(self, arg: str) -> Reply:
         snapshot = self.catalog.load()
-        pools = self.catalog.available(snapshot, self.clock())
+        pools = self.catalog.available(snapshot)
         pages = max(1, math.ceil(len(pools) / 10))
         if arg and (not arg.isascii() or not arg.isdecimal() or int(arg) < 1):
             raise UserError(f"页码必须为正整数，有效范围1至{pages}。")
@@ -218,7 +220,7 @@ class GachaService:
         if not pool_id:
             raise UserError("用法：切换卡池 <pool_id>")
         snapshot = self.catalog.load()
-        pools = self.catalog.available(snapshot, self.clock())
+        pools = self.catalog.available(snapshot)
         key = pool_id.casefold()
         if key == "latest":
             if not pools:
@@ -227,7 +229,7 @@ class GachaService:
         else:
             pool = next((p for p in pools if p.id.casefold() == key), None)
         if pool is None:
-            raise UserError("卡池不存在、尚未开放或未通过规则校验。")
+            raise UserError("卡池不存在或未通过规则校验。")
         await self.renderer.prepare(pool)
         await self.store.set_active(pool.id, snapshot.version)
         return Reply(texts=[f"已切换卡池：{pool.id} | {pool.name}"])
@@ -243,14 +245,14 @@ class GachaService:
             )
             used, limit = (before.ten, 3) if mode == DrawMode.TEN else (before.well, 1)
             if used >= limit:
-                raise UserError("今日该类寻访次数已用完，北京时间04:00刷新。")
+                raise UserError("今日寻访凭证不足。")
             initial = before.state if mode == DrawMode.TEN else DrawState()
             results, after = self.simulator(pool, initial, 10 if mode == DrawMode.TEN else 300)
             images = await self.renderer.render(
                 pool, snapshot.operators, results, mode, limit - used - 1
             )
             if not images:
-                raise UserError("图片生成失败，本次未扣次数。")
+                raise UserError("寻访生成失败。")
             generated_at = self.clock()
             committed = await self.store.commit_draw(
                 user, request_id, pool.id, pool.pity_domain, mode, before, after, generated_at
